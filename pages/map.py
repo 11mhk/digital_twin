@@ -1,29 +1,35 @@
+# pages/map.py
 import streamlit as st
-import json
+import os, json
 import pandas as pd
 import folium
-from folium.plugins import HeatMap
+from folium.plugins import HeatMap, MarkerCluster
 import branca.colormap as cm
 from streamlit_folium import st_folium
-import os
 
-st.set_page_config(layout="wide", page_title="CO₂ Map")
-
-st.title("Geo-Visualization — CO₂ Heatmap & Grid")
+st.set_page_config(layout="wide", page_title="Pune — Heatmap & Visuals")
+st.title("Pune — Heatmap & CO₂ Grid Visuals")
 
 # paths
 EM_PATH = os.path.join("data", "emissions.json")
 GRID_PATH = os.path.join("data", "grid.csv")
 
 # Sidebar controls
-show_heat = st.sidebar.checkbox("Show heatmap", True)
-show_grid = st.sidebar.checkbox("Show grid", True)
-opacity = st.sidebar.slider("Grid opacity", 0.1, 1.0, 0.6)
-radius = st.sidebar.slider("Heatmap radius", 6, 30, 12)
-blur = st.sidebar.slider("Heatmap blur", 8, 30, 15)
-zoom = st.sidebar.slider("Initial zoom", 10, 16, 13)
+st.sidebar.header("Map controls")
+show_heat = st.sidebar.checkbox("Show heatmap (emissions)", True)
+heat_radius = st.sidebar.slider("Heatmap radius", 4, 40, 12)
+heat_blur = st.sidebar.slider("Heatmap blur", 4, 30, 14)
+show_grid = st.sidebar.checkbox("Show CO₂ grid", True)
+grid_opacity = st.sidebar.slider("Grid opacity", 0.1, 1.0, 0.6)
+show_points = st.sidebar.checkbox("Show Pune points", True)
+colormap_name = st.sidebar.selectbox("Colormap", ["YlOrRd", "Viridis", "Plasma"], index=0)
+zoom = st.sidebar.slider("Initial zoom", 10, 14, 12)
 
-# load emissions
+# center Pune
+center = [18.5204, 73.8567]
+m = folium.Map(location=center, zoom_start=zoom, tiles="CartoDB positron")
+
+# ---------- Load emissions (heatmap) ----------
 emissions = []
 if os.path.exists(EM_PATH):
     try:
@@ -34,116 +40,112 @@ if os.path.exists(EM_PATH):
                 lat = r.get("lat") or r.get("latitude") or r.get("y")
                 lon = r.get("lon") or r.get("longitude") or r.get("x")
                 v = r.get("co2") or r.get("value") or r.get("intensity") or 1.0
-                if lat is None or lon is None:
+                if lat is None or lon is None: 
                     continue
-                emissions.append({"lat": float(lat), "lon": float(lon), "value": float(v)})
+                emissions.append([float(lat), float(lon), float(v)])
     except Exception as e:
-        st.error(f"Failed to read {EM_PATH}: {e}")
+        st.sidebar.error(f"Failed to read emissions: {e}")
 else:
-    st.warning(f"{EM_PATH} not found. Create or restore it.")
+    st.sidebar.info("No emissions.json found (create or restore it).")
 
-# load grid
-grid_df = None
-if os.path.exists(GRID_PATH):
+# add HeatMap layer (weighted)
+if show_heat and emissions:
+    # normalize values for HeatMap weight (optional): use value directly; folium will handle weighting
+    HeatMap(emissions, radius=heat_radius, blur=heat_blur, max_zoom=17).add_to(folium.FeatureGroup(name="Emissions Heatmap").add_to(m))
+
+# ---------- Load grid (choropleth-like) ----------
+if os.path.exists(GRID_PATH) and show_grid:
     try:
         grid_df = pd.read_csv(GRID_PATH)
-    except Exception as e:
-        st.error(f"Failed to read {GRID_PATH}: {e}")
-else:
-    st.warning(f"{GRID_PATH} not found. Create or restore it.")
-
-# quick data info
-col1, col2 = st.columns([1,3])
-with col1:
-    st.markdown("**Data summary**")
-    st.write("Emissions points:", len(emissions))
-    st.write("Grid rows:", len(grid_df) if grid_df is not None else 0)
-
-# determine center
-if emissions:
-    avg_lat = sum(p["lat"] for p in emissions)/len(emissions)
-    avg_lon = sum(p["lon"] for p in emissions)/len(emissions)
-elif grid_df is not None and {"lat_min","lat_max","lon_min","lon_max"}.issubset(set(c.lower() for c in grid_df.columns)):
-    df = grid_df.rename(columns={c:c.lower() for c in grid_df.columns})
-    avg_lat = (df["lat_min"].mean() + df["lat_max"].mean())/2
-    avg_lon = (df["lon_min"].mean() + df["lon_max"].mean())/2
-else:
-    avg_lat, avg_lon = 28.7041, 77.1025  # fallback (Delhi)
-
-m = folium.Map(location=[avg_lat, avg_lon], zoom_start=zoom, tiles="CartoDB positron")
-
-# add heatmap
-if show_heat and emissions:
-    heat_points = [[p["lat"], p["lon"], p["value"]] for p in emissions]
-    HeatMap(heat_points, radius=radius, blur=blur, max_zoom=17).add_to(m)
-
-# prepare colormap & value column for grid
-val_col = None
-if grid_df is not None:
-    lower = [c.lower() for c in grid_df.columns]
-    for candidate in ("co2","value","intensity","emission"):
-        if candidate in lower:
-            val_col = [c for c in grid_df.columns if c.lower()==candidate][0]
-            break
-    if val_col is None:
-        val_col = grid_df.columns[-1]  # fallback
-    vals = pd.to_numeric(grid_df[val_col], errors="coerce")
-    vmin, vmax = float(vals.min()), float(vals.max())
-    if vmin == vmax:
-        vmin = 0.0
-    colormap = cm.linear.YlOrRd_09.scale(vmin, vmax)
-    colormap.caption = "CO₂ intensity"
-
-# draw grid rectangles
-if show_grid and grid_df is not None:
-    cols_low = [c.lower() for c in grid_df.columns]
-    if set(["lat_min","lon_min","lat_max","lon_max"]).issubset(cols_low):
-        df = grid_df.rename(columns={c:c.lower() for c in grid_df.columns})
-        for _, row in df.iterrows():
-            try:
-                lat1, lon1, lat2, lon2 = row["lat_min"], row["lon_min"], row["lat_max"], row["lon_max"]
-                value = float(row[val_col])
-            except Exception:
-                continue
-            color = colormap(value) if vmax>vmin else colormap(vmin)
-            folium.Rectangle(
-                bounds=[[lat1, lon1], [lat2, lon2]],
-                color=None,
-                fill=True,
-                fill_opacity=opacity,
-                fill_color=color,
-                tooltip=f"CO₂: {value:.2f}"
-            ).add_to(m)
-    else:
-        # centroid case
-        lat_col = [c for c in grid_df.columns if c.lower().startswith("lat")][0]
-        lon_col = [c for c in grid_df.columns if c.lower().startswith("lon")][0]
-        lats = grid_df[lat_col].astype(float)
-        lons = grid_df[lon_col].astype(float)
-        if len(lats) > 1:
-            lat_diff = abs(lats.diff().dropna().median()) or 0.001
-            lon_diff = abs(lons.diff().dropna().median()) or 0.001
+        # detect value column
+        lower = [c.lower() for c in grid_df.columns]
+        val_col = None
+        for cand in ("co2","value","intensity","emission"):
+            if cand in lower:
+                val_col = [c for c in grid_df.columns if c.lower()==cand][0]
+                break
+        if val_col is None:
+            val_col = grid_df.columns[-1]
+        vals = pd.to_numeric(grid_df[val_col], errors="coerce")
+        vmin, vmax = float(vals.min()), float(vals.max())
+        if vmin == vmax:
+            vmin = 0.0
+        # choose colormap
+        cmap = getattr(cm.linear, f"{colormap_name}_09")
+        colormap = cmap.scale(vmin, vmax)
+        colormap.caption = "CO₂ intensity"
+        # draw rectangles (bounding-box format)
+        cols_low = [c.lower() for c in grid_df.columns]
+        gf = folium.FeatureGroup(name="CO₂ Grid").add_to(m)
+        if set(["lat_min","lon_min","lat_max","lon_max"]).issubset(cols_low):
+            df = grid_df.rename(columns={c:c.lower() for c in grid_df.columns})
+            for _, row in df.iterrows():
+                try:
+                    lat1, lon1, lat2, lon2 = row["lat_min"], row["lon_min"], row["lat_max"], row["lon_max"]
+                    value = float(row[val_col])
+                except Exception:
+                    continue
+                color = colormap(value) if vmax>vmin else colormap(vmin)
+                folium.Rectangle(
+                    bounds=[[lat1, lon1], [lat2, lon2]],
+                    color=None,
+                    fill=True,
+                    fill_opacity=grid_opacity,
+                    fill_color=color,
+                    tooltip=f"CO₂: {value:.2f}"
+                ).add_to(gf)
         else:
-            lat_diff = lon_diff = 0.001
-        hlat, hlon = lat_diff/2.2, lon_diff/2.2
-        for _, row in grid_df.iterrows():
-            lat, lon = float(row[lat_col]), float(row[lon_col])
-            v = float(row[val_col])
-            color = colormap(v) if vmax>vmin else colormap(vmin)
-            folium.Rectangle(
-                bounds=[[lat-hlat, lon-hlon], [lat+hlat, lon+hlon]],
-                color=None,
-                fill=True,
-                fill_opacity=opacity,
-                fill_color=color,
-                tooltip=f"CO₂: {v:.2f}"
-            ).add_to(m)
+            # centroid fallback: draw small squares
+            lat_col = [c for c in grid_df.columns if c.lower().startswith("lat")][0]
+            lon_col = [c for c in grid_df.columns if c.lower().startswith("lon")][0]
+            lats = grid_df[lat_col].astype(float)
+            lons = grid_df[lon_col].astype(float)
+            if len(lats) > 1:
+                lat_diff = abs(lats.diff().dropna().median()) or 0.001
+                lon_diff = abs(lons.diff().dropna().median()) or 0.001
+            else:
+                lat_diff = lon_diff = 0.001
+            hlat, hlon = lat_diff/2.2, lon_diff/2.2
+            for _, row in grid_df.iterrows():
+                lat, lon = float(row[lat_col]), float(row[lon_col])
+                v = float(row[val_col])
+                color = colormap(v) if vmax>vmin else colormap(vmin)
+                folium.Rectangle(
+                    bounds=[[lat-hlat, lon-hlon], [lat+hlat, lon+hlon]],
+                    color=None, fill=True, fill_opacity=grid_opacity, fill_color=color,
+                    tooltip=f"CO₂: {v:.2f}"
+                ).add_to(gf)
+        colormap.add_to(m)
+    except Exception as e:
+        st.sidebar.error(f"Failed to read grid.csv: {e}")
 
-# add map controls
-if 'colormap' in locals():
-    colormap.add_to(m)
-folium.LayerControl().add_to(m)
+# ---------- Pune sample points (cluster + popups) ----------
+if show_points:
+    pune_points = [
+        ("Shivaji Nagar", 18.5309, 73.8478, 12.3),
+        ("Viman Nagar",   18.5679, 73.9143, 18.1),
+        ("Hinjawadi",     18.5913, 73.7389, 8.2),
+        ("Kothrud",       18.5074, 73.8077, 9.5),
+        ("Swargate",      18.5018, 73.8640, 11.0),
+    ]
+    cluster = MarkerCluster(name="Pune Points").add_to(m)
+    for name, lat, lon, co2 in pune_points:
+        html = f"""
+        <div style="font-size:13px">
+          <b>{name}</b><br/>
+          CO₂: {co2:.2f} units<br/>
+          <small>Sample point</small>
+        </div>
+        """
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(html, max_width=250),
+            tooltip=name,
+            icon=folium.Icon(color="darkgreen", icon="info-sign")
+        ).add_to(cluster)
 
-# render in Streamlit
+# Layer controls + render
+folium.LayerControl(collapsed=False).add_to(m)
 st.markdown("#### Map")
-st_folium(m, width=1100, height=700)
+st.write("Use the sidebar to toggle layers and adjust heatmap/grid appearance.")
+st_data = st_folium(m, width=1100, height=700)
