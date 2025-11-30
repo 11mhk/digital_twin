@@ -16,6 +16,20 @@ import branca.colormap as cm
 from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
 
+import streamlit as st
+
+st.markdown(
+    """
+    <div class="page-title-pill">
+        🌍 Map · CO₂ Intensity
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.title("Map View")
+st.caption("Interactive spatial view of CO₂ intensity and simulation layers.")
+
+
 st.set_page_config(layout="wide", page_title="CO₂ Map — Pune")
 st.title("CO₂ Map — Pune (Heatmap · Grid · Vehicular)")
 
