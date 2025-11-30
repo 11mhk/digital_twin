@@ -1,0 +1,6 @@
+[theme]
+primaryColor="#3B82F6"              # accent
+backgroundColor="#0B1120"           # page background
+secondaryBackgroundColor="#020617"  # sidebar / cards
+textColor="#E5E7EB"                 # main text
+font="sans serif"
